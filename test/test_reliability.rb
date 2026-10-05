@@ -355,6 +355,32 @@ class TestReliability < Minitest::Test
     assert_includes log.string, '[BINARY 10 bytes]'
   end
 
+  # Rack::Timeout raises a RuntimeError into the request thread; MintHttp's own rescues must
+  # never swallow it, or the request would keep running past its timeout.
+  def test_timeout_raised_while_logging_is_not_swallowed
+    url = echo_server
+    fake_timeout = Class.new(RuntimeError)
+    slow_logger = Logger.new(StringIO.new)
+    def slow_logger.info(message = nil, &block)
+      sleep(0.3)
+      super
+    end
+    result = nil
+
+    worker = Thread.new do
+      MintHttp.use_logger(slow_logger).get("#{url}/x")
+      result = :returned
+    rescue fake_timeout
+      result = :timed_out
+    end
+
+    sleep(0.15)
+    worker.raise(fake_timeout)
+    worker.join
+
+    assert_equal :timed_out, result
+  end
+
   def test_logging_transcodes_declared_charset
     url = serve do |c|
       read_request(c)

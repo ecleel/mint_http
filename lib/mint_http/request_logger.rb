@@ -89,7 +89,19 @@ module MintHttp
     end
 
     # Logging must never fail a request: any error here is reported as a warning only.
+    # Interrupts (e.g. Rack::Timeout) are deferred until the log is written so that rescue
+    # cannot swallow them.
     def write_log
+      Thread.handle_interrupt(Object => :never) { build_and_write_log }
+    end
+
+    def log_connection_info(http)
+      Thread.handle_interrupt(Object => :never) { read_connection_info(http) }
+    end
+
+    private
+
+    def build_and_write_log
       return if discarding_logger?
 
       path = build_path(@url)
@@ -150,7 +162,7 @@ module MintHttp
       @logger.warn("MintHttp failed to write request log: #{e.class}: #{e.message}") rescue nil
     end
 
-    def log_connection_info(http)
+    def read_connection_info(http)
       @tls_config = http.instance_eval do
         if use_ssl?
           { version: @socket.io.ssl_version, cipher: @socket.io.cipher[0] }
@@ -168,8 +180,6 @@ module MintHttp
       # e.g. Errno::ENOTCONN when the peer already reset the connection
       nil
     end
-
-    private
 
     # Nothing would be written: no logger, a level above INFO, or a plain Logger writing
     # nowhere such as the default Logger.new('/dev/null')

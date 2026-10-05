@@ -79,6 +79,17 @@ class MintHttp::PoolEntry
   def healthy?
     return false if @acquired
 
+    # Interrupts (e.g. Rack::Timeout) are deferred so the probe's rescue cannot swallow them
+    Thread.handle_interrupt(Object => :never) { probe }
+  end
+
+  def to_clean?
+    !@acquired && (expired? || !healthy?)
+  end
+
+  private
+
+  def probe
     socket = client.underlying_tcp_socket
     return false unless socket.is_a?(TCPSocket)
     return false if socket.closed?
@@ -88,12 +99,6 @@ class MintHttp::PoolEntry
   rescue StandardError
     false
   end
-
-  def to_clean?
-    !@acquired && (expired? || !healthy?)
-  end
-
-  private
 
   def time_ms
     Process.clock_gettime(Process::CLOCK_MONOTONIC, :millisecond)

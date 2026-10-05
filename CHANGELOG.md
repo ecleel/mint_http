@@ -9,6 +9,7 @@ Connection reliability fixes. Before these, successful calls could fail, hang, o
 - Interrupted requests (`Timeout.timeout`, `Thread#raise`, Rack::Timeout) never return their connection to the pool.
 - Interrupts can no longer leak pool slots: connections left checked out by a dead thread, or by an interrupt landing right after check-out, are reclaimed.
 - The caller's `Thread.handle_interrupt` mask is respected.
+- Interrupts that are `StandardError`s, such as Rack::Timeout's, are never swallowed by MintHttp's internal error handling (health checks and logging).
 - Pool waiters are served first come, first served and are woken as soon as a connection is released, instead of sleeping and polling.
 - A full pool closes idle connections to other hosts instead of making requests to a new host wait and time out.
 - The pool is fork-safe.
