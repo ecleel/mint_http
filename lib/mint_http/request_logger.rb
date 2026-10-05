@@ -7,8 +7,19 @@ module MintHttp
     MAX_BODY_SIZE = 15 * 1024
     BODY_ALLOWED_TYPES = [/application\/.+/, /text\/.+/]
 
+    # Redaction regexes compiled once per filter list, compiling them on every request was
+    # most of the cost of logging
+    PATTERNS = {}
+    PATTERNS_LOCK = Mutex.new
+
+    def self.patterns(kind, keywords, &compile)
+      PATTERNS[[kind, keywords]] || PATTERNS_LOCK.synchronize do
+        PATTERNS.clear if PATTERNS.size > 64
+        PATTERNS[[kind, keywords.dup.freeze]] ||= keywords.map { |keyword| compile.call(Regexp.escape(keyword)) }.freeze
+      end
+    end
+
     attr_reader :logger
-    attr_reader :filter_list
     attr_reader :time_started
     attr_reader :time_ended
     attr_reader :time_connected
@@ -22,7 +33,7 @@ module MintHttp
     # @param [Array[String|Symbol]] request
     def initialize(logger, filter_list, filter = true)
       @logger = logger
-      @filter_list = filter_list.map { |param| param.to_s.downcase }.uniq
+      @raw_filter_list = filter_list
       @filter = filter
       @time_started = 0.0
       @time_ended = 0.0
@@ -96,7 +107,14 @@ module MintHttp
     end
 
     def log_connection_info(http)
+      return if discarding_logger?
+
       Thread.handle_interrupt(Object => :never) { read_connection_info(http) }
+    end
+
+    # Lower-cased params to filter, built only when a log is written
+    def filter_list
+      @filter_list ||= @raw_filter_list.map { |param| param.to_s.downcase }.uniq
     end
 
     private
@@ -112,17 +130,7 @@ module MintHttp
         tls = "#{@tls_config[:version]} Cipher: #{@tls_config[:cipher]}"
       end
 
-      local_address = if @local_address
-        "#{@local_address.ip_address}:#{@local_address.ip_port}"
-      else
-        'N/A'
-      end
-
-      remote_address = if @remote_address
-        "#{@remote_address.ip_address}:#{@remote_address.ip_port}"
-      else
-        'N/A'
-      end
+      local_address, remote_address = @address_labels || ['N/A', 'N/A']
 
       buffer = String.new(encoding: 'UTF-8')
       buffer << <<~TXT
@@ -171,10 +179,9 @@ module MintHttp
         end
       end
 
-      socket = http.underlying_tcp_socket
-      if socket && socket.is_a?(TCPSocket)
-        @local_address = socket.local_address
-        @remote_address = socket.remote_address
+      if http.underlying_tcp_socket.is_a?(TCPSocket)
+        @local_address, @remote_address = http.connection_addresses
+        @address_labels = http.connection_address_labels
       end
     rescue StandardError
       # e.g. Errno::ENOTCONN when the peer already reset the connection
@@ -217,7 +224,7 @@ module MintHttp
     end
 
     def lower_case_filter_list
-      @_lower_case_filter_list ||= @filter_list.map(&:downcase)
+      filter_list
     end
 
     def filter_query(query)
@@ -309,23 +316,21 @@ module MintHttp
     end
 
     def redact_json(json)
-      @json_patterns ||= @filter_list.map do |keyword|
-        keyword = Regexp.escape(keyword)
+      patterns = self.class.patterns(:json, filter_list) do |keyword|
         Regexp.compile("\"(#{keyword})\"(\\s*):(\\s*)(?>\".+?(?<!\\\\)\"|\\d+(?>\\.\\d+)?)", Regexp::IGNORECASE | Regexp::EXTENDED)
       end
 
-      @json_patterns.inject(json) do |carry, pattern|
+      patterns.inject(json) do |carry, pattern|
         carry.gsub(pattern, '"\1"\2:\3"[FILTERED]"')
       end
     end
 
     def redact_xml(raw)
-      @xml_patterns ||= @filter_list.map do |keyword|
-        keyword = Regexp.escape(keyword)
+      patterns = self.class.patterns(:xml, filter_list) do |keyword|
         Regexp.compile("<#{keyword}(?>.|\\n)+?</(#{keyword})>", Regexp::IGNORECASE | Regexp::EXTENDED)
       end
 
-      @xml_patterns.inject(raw) do |carry, pattern|
+      patterns.inject(raw) do |carry, pattern|
         carry.gsub(pattern, '<\1>[FILTERED]</\1>')
       end
     end

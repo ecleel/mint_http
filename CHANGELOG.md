@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- Request logging is about twice as fast: redaction regexes are compiled once per filter list instead of on every request.
+- Connection addresses are looked up and formatted once per connection instead of on every request.
+- Nothing is computed for the request log when the logger discards everything.
+
 ## [1.2.0] - 2026-10-05
 
 Connection reliability fixes. Before these, successful calls could fail, hang, or receive another request's response. There are no breaking changes: methods, raised exceptions, requests sent and defaults are unchanged, and the new behaviours are opt-in.
